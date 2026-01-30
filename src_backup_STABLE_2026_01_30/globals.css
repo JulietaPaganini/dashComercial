@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@theme {
+  /* COLORS */
+  --color-gray-50: #F9FAFB;
+  --color-gray-100: #F3F4F6;
+  --color-gray-200: #E5E7EB;
+  --color-gray-300: #D1D5DB;
+  --color-gray-400: #9CA3AF;
+  --color-gray-500: #6B7280;
+  --color-gray-600: #4B5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1F2937;
+  --color-gray-900: #111827;
+
+  --color-blue-50: #EFF6FF;
+  --color-blue-100: #DBEAFE;
+  --color-blue-200: #BFDBFE;
+  --color-blue-500: #3B82F6;
+  --color-blue-600: #2563EB;
+  --color-blue-700: #1D4ED8;
+
+  --color-sidebar: #1C2434;
+
+  --color-accent-green: #10B981;
+  --color-accent-blue: #3C50E0;
+  --color-accent-red: #da3e2f;
+  --color-accent-orange: #FFBA00;
+
+  /* SHADOWS */
+  --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+  --shadow-elevated: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+/* --- LEGACY VARS FOR COMPATIBILITY --- */
+:root {
+  --bg-deep: #F4F6F8;
+  --bg-surface: #FFFFFF;
+  --bg-sidebar: #1C2434;
+
+  --primary: #3C50E0;
+  --primary-hover: #3041B2;
+
+  --color-success: #10B981;
+  --color-info: #3B82F6;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+
+  --border-light: #E5E7EB;
+  --text-main: #111827;
+  --text-secondary: #6B7280;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 font-sans antialiased m-0;
+  background-color: var(--bg-deep);
+  /* Fallback */
+}
+
+/* --- COMPONENT UTILITIES --- */
+@layer components {
+  .card-panel {
+    @apply bg-white border border-gray-200 rounded-lg p-6 shadow-card;
+  }
+
+  .glass-panel {
+    @apply bg-white border border-gray-200 rounded-xl shadow-sm transition-all duration-300;
+  }
+
+  .glass-panel:hover {
+    @apply shadow-elevated -translate-y-1;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center px-4 py-2 font-medium rounded-lg transition-colors cursor-pointer gap-2 border;
+  }
+}
