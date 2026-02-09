@@ -424,6 +424,12 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
     // Calculate Global Debt for Display Title
     const globalDebt = (processedData?.clients || []).reduce((acc, c) => acc + c.amount, 0);
 
+    // --- DEBUG 2026 VISIBLE ---
+    const sales2026Raw = (processedData?.sales || []).filter(s => s.sourceSheet && s.sourceSheet.includes('2026'));
+    const total2026Raw = sales2026Raw.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+    const count2026Raw = sales2026Raw.length;
+    // --------------------------
+
     return {
       kpis: dynamicKpis,
       revenueTrend: dynamicKpis.sales.revenueTrend || [],
@@ -431,6 +437,9 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
       filteredClients,
       salesTrend,
       globalDebt,
+
+      // Pass Debug Data
+      debug2026: { total: total2026Raw, count: count2026Raw },
 
       // Extract unique options for Table Dropdowns based on CURRENT data (or ALL data? usually ALL is better for dropdowns)
       uniqueStatuses: [...new Set(processedData?.quotes?.map(q => q.status).filter(Boolean))].sort(),
@@ -471,6 +480,25 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Dashboard Comercial</h1>
           <p className="text-gray-500 mt-1">Visión general del rendimiento y estado financiero.</p>
+
+          {/* --- DEBUG BOX --- */}
+          {dashboardData.debug2026 && (
+            <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-md max-w-xl">
+              <p className="font-bold flex items-center gap-2"><AlertTriangle size={18} /> DEBUG: Validación de Datos 2026 (Raw)</p>
+              <p className="text-sm mt-1">
+                Total detectado en hoja "VENTAS - CONCRETADAS 2026": <br />
+                <span className="text-xl font-mono font-bold">{fmtMoneyFull(dashboardData.debug2026.total)}</span>
+                <span className="text-xs ml-2">({dashboardData.debug2026.count} filas)</span>
+              </p>
+              <p className="text-xs mt-2 opacity-80">
+                Este número es la suma directa de la columna "A COBRAR SIN IVA" sin ningún filtro de fecha.
+                Si este número es correcto ($59M), el problema está en los filtros de fecha.
+                Si este número es incorrecto ($47M), el problema es que el sistema no está leyendo todas las filas del Excel.
+              </p>
+            </div>
+          )}
+          {/* ----------------- */}
+
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="bg-white px-4 py-2 rounded-lg border border-gray-200 shadow-sm text-sm text-gray-500 flex items-center gap-2">

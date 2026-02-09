@@ -107,18 +107,38 @@ const processQuotesFile = (workbook, dataset) => {
                 dataset.quotes.push(normalized);
             }
         });
+
+        console.log(`[PARSER] Scanned Quotes Sheet. Found ${dataset.quotes.length} Quotes.`);
+        dataset.issues.push({
+            type: 'INFO',
+            sheet: 'PRESUPUESTOS',
+            row: 0,
+            message: `Leídas ${dataset.quotes.length} cotizaciones de PRESUPUESTOS.`
+        });
     }
 
-    // 2. VENTAS Sheet
-    const salesSheet = workbook.Sheets['VENTAS'];
-    if (salesSheet) {
-        // Same header finding logic for Sales (robustness)
+    // 2. VENTAS - CONCRETADAS (Multi-Year Support)
+    // Find ALL sheets matching "VENTAS - CONCRETADAS YYYY" pattern (or just VENTAS - CONCRETADAS)
+    const salesSheets = workbook.SheetNames.filter(name =>
+        name.toUpperCase().includes('VENTAS') && name.toUpperCase().includes('CONCRETADAS')
+    );
+
+    console.log('[PARSER] Found Sales Sheets:', salesSheets);
+
+    salesSheets.forEach(sheetName => {
+        const salesSheet = workbook.Sheets[sheetName];
+        if (!salesSheet) return;
+
+        // Dynamic Header Finding (Robust)
         const aoa = XLSX.utils.sheet_to_json(salesSheet, { header: 1, defval: null });
         let headerRowIndex = 0;
         for (let i = 0; i < Math.min(aoa.length, 20); i++) {
             const rowValues = aoa[i]?.map(v => String(v).toUpperCase().trim()) || [];
-            if (rowValues.includes('CLIENTE') && rowValues.some(v => v.includes('FECHA'))) {
+            // Criteria: Must have columns like N°, FECHA, A COBRAR, CLIENTE
+            // Note: User said N° is in Column B. We assume header has "Nº".
+            if (rowValues.includes('Nº') || rowValues.includes('N°') || (rowValues.includes('CLIENTE') && rowValues.some(v => v.includes('COBRAR')))) {
                 headerRowIndex = i;
+                console.log(`[PARSER] Found Header for ${sheetName} at Row ${i + 1}`);
                 break;
             }
         }
@@ -127,58 +147,128 @@ const processQuotesFile = (workbook, dataset) => {
         range.s.r = headerRowIndex;
         const rawSales = XLSX.utils.sheet_to_json(salesSheet, { range: range, defval: null });
 
-        rawSales.forEach(row => {
-            const normalized = {};
+        let rowsParsed = 0;
+
+        rawSales.forEach((row, idx) => {
+            const normalized = {
+                sourceSheet: sheetName,
+                originalRowIndex: idx + headerRowIndex + 2 // 1-based, +1 for header
+            };
+
+            // Extract Year from Sheet Name (e.g. "VENTAS - CONCRETADAS 2024")
+            const yearMatch = sheetName.match(/20\d{2}/);
+            if (yearMatch) normalized.year = parseInt(yearMatch[0]);
+
+            let hasAmount = false;
+
             Object.keys(row).forEach(key => {
-                const cleanKey = key.trim().toUpperCase();
-                // Link
-                if (cleanKey === 'Nº' || cleanKey === 'N°' || (cleanKey.includes('COTIZACION') && !cleanKey.includes('FECHA') && !cleanKey.includes('DATE'))) normalized.quoteId = row[key];
+                // ROBUST KEY NORMALIZATION
+                // Remove all spaces, uppercase, normalize accents.
+                // "A COBRAR SIN IVA" -> "ACOBRARSINIVA"
+                // "Nº" -> "Nº"
+                const rawKey = key.trim().toUpperCase();
+                const cleanKey = rawKey.replace(/\s+/g, '').normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+                // Link ID (Nº) - Critical
+                if (cleanKey === 'Nº' || cleanKey === 'N°' || cleanKey === 'NUMERO' || (cleanKey.includes('COTIZACION') && !cleanKey.includes('FECHA') && !cleanKey.includes('DATE'))) {
+                    normalized.quoteId = row[key];
+                }
 
                 // Vehiculo / Equipo
                 else if (cleanKey.includes('DOMINIO') || cleanKey.includes('CC')) normalized.domain = row[key];
 
-                // Dates
-                else if (cleanKey === 'FECHA DE OC' || cleanKey === 'FECHA OC') normalized.ocDate = row[key];
-                else if (cleanKey === 'FECHA DE ENTREGA') normalized.deliveryDate = row[key];
-                else if (cleanKey.includes('FECHA FACTURA') || cleanKey.includes('FECHA FC') || cleanKey.includes('F. FACTURA') || cleanKey.includes('F. FC')) normalized.invoiceDate = row[key];
-                else if (cleanKey === 'FECHA COBRO') normalized.paymentDate = row[key];
+                // Dates - Try to catch all relevant dates
+                else if (cleanKey === 'FECHADEOC' || cleanKey === 'FECHAOC' || cleanKey === 'F.OC') normalized.ocDate = row[key];
+                else if (cleanKey === 'FECHADEENTREGA' || cleanKey === 'FECHAENTREGA') normalized.deliveryDate = row[key];
+                else if (cleanKey.includes('FECHAFACTURA') || cleanKey.includes('FECHAFC') || cleanKey.includes('F.FACTURA') || cleanKey.includes('F.FC')) normalized.invoiceDate = row[key];
+                else if (cleanKey === 'FECHACOBRO') normalized.paymentDate = row[key];
 
                 // Financials
+                // --- MANDATORY: A COBRAR SIN IVA ---
+                // Matches: "ACOBRARSINIVA", "ACOBRARS/IVA"
+                else if (cleanKey === 'ACOBRARSINIVA' || cleanKey === 'ACOBRARS/IVA' || cleanKey.includes('COBRARSINIVA')) {
+                    normalized.receivableReal = row[key]; // Mapped to saleAmount in DataProcessor
+                    hasAmount = true;
+                }
+
+                // --- FALLBACKS / OTHER FIELDS ---
                 else if (cleanKey.includes('COSTO')) {
                     normalized.cost = row[key];
-                    normalized.currency = detectCurrency(row[key]); // Assuming cost follows same currency as sale? Usually yes.
+                    normalized.currency = detectCurrency(row[key]);
                 }
-                // Robust check for Benefits: Match both "BENEFICIO ... ($)" and simple "BEN $"
-                else if ((cleanKey.includes('BENEFICIO') && cleanKey.includes('$')) || cleanKey === 'BEN $' || cleanKey === 'BENEFICIO') normalized.profitAmount = row[key];
-                // Robust check for Percent: Match both "BENEFICIO ... (%)" and simple "BEN %"
-                else if ((cleanKey.includes('BENEFICIO') && cleanKey.includes('%')) || cleanKey === 'BEN %') normalized.profitPercent = row[key];
-                else if (cleanKey === 'A COBRAR STD') normalized.receivableStd = row[key];
-                else if (cleanKey === 'A COBRAR REAL') normalized.receivableReal = row[key];
+                else if ((cleanKey.includes('BENEFICIO') && cleanKey.includes('$')) || cleanKey === 'BEN$' || cleanKey === 'BENEFICIO') normalized.profitAmount = row[key];
+                else if ((cleanKey.includes('BENEFICIO') && cleanKey.includes('%')) || cleanKey === 'BEN%') normalized.profitPercent = row[key];
+                else if (cleanKey === 'ACOBRARSTD') normalized.receivableStd = row[key];
+                else if (cleanKey === 'ACOBRARREAL') {
+                    // If existing, ok, but "A COBRAR SIN IVA" is priority now.
+                    if (!normalized.receivableReal) normalized.receivableReal = row[key];
+                }
 
                 // Status / Docs
                 else if (cleanKey === 'ESTADO') normalized.collectionStatus = row[key];
-                else if (cleanKey === 'OC Nº' || cleanKey === 'OC N°') normalized.ocNumber = row[key];
-                else if (cleanKey.includes('FC Nº') || cleanKey.includes('FC N°')) normalized.invoiceNumber = row[key];
+                else if (cleanKey === 'OCNº' || cleanKey === 'OCN°') normalized.ocNumber = row[key];
+                else if (cleanKey.includes('FCNº') || cleanKey.includes('FCN°')) normalized.invoiceNumber = row[key];
+                else if (cleanKey === 'CLIENTE') normalized.client = row[key]; // Helpful if orphan
 
                 // Operational / Policy
-                else if (cleanKey === 'HS COTIZADAS') normalized.hoursQuoted = row[key];
-                else if (cleanKey === 'HS UTILIZADAS') normalized.hoursUsed = row[key];
+                else if (cleanKey === 'HSCOTIZADAS') normalized.hoursQuoted = row[key];
+                else if (cleanKey === 'HSUTILIZADAS') normalized.hoursUsed = row[key];
                 else if (cleanKey === 'POLIZA') normalized.policyIndex = row[key];
-                else if (cleanKey === 'ESTADO DE POLIZA') normalized.policyStatus = row[key];
+                else if (cleanKey === 'ESTADODEPOLIZA') normalized.policyStatus = row[key];
 
                 // Desc
-                else if (cleanKey === 'DESCRIPCION' || cleanKey === 'DESCRIPCION DEL TRABAJO' || cleanKey === 'DESC. TRABAJO' || cleanKey === 'DESC TRABAJO') normalized.workDescription = row[key];
+                else if (cleanKey.includes('DESCRIPCION') || cleanKey.includes('TRABAJO')) normalized.workDescription = row[key];
             });
 
-            if (normalized.quoteId || (normalized.client && typeof normalized.amount === 'number')) {
+            // Validation & Fallbacks
+            if (normalized.quoteId || (normalized.client && (hasAmount || normalized.receivableReal))) {
                 // Determine a fallback ID if missing (needed for keys)
                 if (!normalized.quoteId) {
-                    normalized.quoteId = `SIN-COT-${Math.random().toString(36).substr(2, 5)}`;
+                    // Log inconsistency
+                    dataset.issues.push({
+                        type: 'WARNING',
+                        sheet: sheetName,
+                        row: normalized.originalRowIndex,
+                        message: 'Venta sin Nº de Cotización. Se generará ID temporal. Chequear Columna Nº (B).'
+                    });
+                    normalized.quoteId = `SIN-COT-${sheetName}-${Math.random().toString(36).substr(2, 5)}`;
                 }
+
+                // Validate Amount: Check "A COBRAR SIN IVA"
+                const amt = parseCurrency(normalized.receivableReal);
+                if (!amt || amt === 0) {
+                    dataset.issues.push({
+                        type: 'WARNING',
+                        sheet: sheetName,
+                        row: normalized.originalRowIndex,
+                        message: 'Monto es 0 o vacío en "A COBRAR SIN IVA".'
+                    });
+                }
+
+                // Validate Date (User Request Debug)
+                const dateCheck = parseExcelDate(normalized.ocDate);
+                if (!dateCheck && sheetName.includes('2026')) {
+                    dataset.issues.push({
+                        type: 'WARNING',
+                        sheet: sheetName,
+                        row: normalized.originalRowIndex,
+                        message: 'Falta "FECHA DE OC" válida. Esta venta NO aparecerá en 2026.'
+                    });
+                }
+
                 dataset.sales.push(normalized);
+                rowsParsed++;
             }
         });
-    }
+
+        console.log(`[PARSER] Finished Sheet: ${sheetName}. Added ${rowsParsed} sales.`);
+        dataset.issues.push({
+            type: 'INFO',
+            sheet: sheetName,
+            row: 0,
+            message: `Hoja ${sheetName}: Leídas ${rowsParsed} ventas.`
+        });
+    });
 };
 
 // --- CLIENTS FILE PROCESSING ---

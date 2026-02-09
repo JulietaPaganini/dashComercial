@@ -1,16 +1,34 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>dashboard-ocme</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dashboard-ocme</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <div id="root"></div>
+  <script>
+    window.addEventListener('error', function (event) {
+      document.body.innerHTML += '<div style="color: red; padding: 20px; border: 1px solid red; margin: 20px; background: #fff0f0; z-index: 9999; position: relative;">' +
+        '<h1>Global Error Caught</h1>' +
+        '<pre>' + (event.message || 'Unknown Error (possibly script load failure)') + '</pre>' +
+        '<pre>' + (event.error ? event.error.stack : (event.target ? 'Target: ' + event.target.tagName + ' (src: ' + (event.target.src || event.target.href) + ')' : '')) + '</pre>' +
+        '</div>';
+    }, true);
+    window.addEventListener('unhandledrejection', function (event) {
+      document.body.innerHTML += '<div style="color: red; padding: 20px; border: 1px solid red; margin: 20px; background: #fff0f0; z-index: 9999; position: relative;">' +
+        '<h1>Unhandled Promise Rejection</h1>' +
+        '<pre>' + event.reason + '</pre>' +
+        '</div>';
+    });
+  </script>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
 </html>

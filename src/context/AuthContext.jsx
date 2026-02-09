@@ -10,9 +10,18 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
     // Check active session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
+      setLoading(false);
+    }).catch(err => {
+      console.error('Session check failed:', err);
+      // Ensure we don't hang in loading state
       setLoading(false);
     });
 
@@ -26,6 +35,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const login = async (email, password) => {
+    if (!supabase) throw new Error("Supabase no está configurado (Faltan variables de entorno).");
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -35,6 +45,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const signUp = async (email, password) => {
+    if (!supabase) throw new Error("Supabase no está configurado.");
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -44,6 +55,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
+    if (!supabase) return;
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
   };

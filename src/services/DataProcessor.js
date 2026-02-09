@@ -3,12 +3,27 @@ import { CurrencyService } from './CurrencyService';
 // IMPORT SHARED UTILS (Single Source of Truth)
 import { parseCurrency, detectCurrency, parseExcelDate } from './Utils';
 
-export const processDataset = (dataset) => {
-    // 0. Ensure dataset exists
-    const rawDataset = dataset || { quotes: [], sales: [], clients: [], audit: {}, issues: [] };
+export const processDataset = (rawDataset) => {
+    const { quotes, sales, clients } = rawDataset;
 
-    // DEBUG: Capture raw data for inspection
-    const debugRaw = rawDataset.quotes ? rawDataset.quotes.slice(0, 10) : [];
+    // --- AUDIT LOGGING FOR USER DEBUG (2026) ---
+    const sales2026 = sales.filter(s => s.sourceSheet && s.sourceSheet.includes('2026'));
+    const total2026Raw = sales2026.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+    const count2026 = sales2026.length;
+    const count2026NoDate = sales2026.filter(s => !parseExcelDate(s.ocDate)).length;
+
+    console.log(`[AUDIT 2026] Raw Sales Calculation:
+    - Sheet: VENTAS - CONCRETADAS 2026
+    - Rows Found: ${count2026}
+    - Rows w/ Missing FECHA OC: ${count2026NoDate}
+    - Total A COBRAR SIN IVA (Raw Sum): $${total2026Raw.toLocaleString()}
+    `);
+
+    // Warn about specific rows if they are missing dates
+    if (count2026NoDate > 0) {
+        console.warn('[AUDIT 2026] Rows missing FECHA DE OC:', sales2026.filter(s => !parseExcelDate(s.ocDate)));
+    }
+    // -------------------------------------------
 
     const processed = {
         quotes: [], // Unified Quote + Sales info
@@ -79,7 +94,11 @@ export const processDataset = (dataset) => {
             source: source, // 'MATCH', 'QUOTE_ONLY', 'SALE_ONLY'
 
             // Core Data
-            date: parseExcelDate(quote?.date || sale?.ocDate), // Fallback to sale date if quote missing
+            // USER REQUIREMENT: For Sales, the date MUST be the OC Date (Fecha de OC) from Column D.
+            // If it's a Sale (has sale object) and has ocDate, use it.
+            // Fallback to Quote Date only if no sales date available.
+            date: parseExcelDate((sale && sale.ocDate) ? sale.ocDate : (quote?.date || sale?.ocDate)),
+
             client: quote?.client || 'Sin Cliente', // Could try to extract client from Sale description if desperate
             description: combinedDescription,
             amount: amount,
