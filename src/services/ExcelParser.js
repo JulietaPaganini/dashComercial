@@ -118,12 +118,13 @@ const processQuotesFile = (workbook, dataset) => {
     }
 
     // 2. VENTAS - CONCRETADAS (Multi-Year Support)
-    // Find ALL sheets matching "VENTAS - CONCRETADAS YYYY" pattern (or just VENTAS - CONCRETADAS)
-    const salesSheets = workbook.SheetNames.filter(name =>
-        name.toUpperCase().includes('VENTAS') && name.toUpperCase().includes('CONCRETADAS')
-    );
+    // Find ALL sheets matching "VENTAS - CONCRETADAS YYYY" pattern (flexible spaces/hyphens)
+    // Regex: ^VENTAS\s*-\s*CONCRETADAS\s*20\d{2}$ (Case Insensitive)
+    const salesSheetRegex = /VENTAS\s*[-]?\s*CONCRETADAS\s*20\d{2}/i;
 
-    console.log('[PARSER] Found Sales Sheets:', salesSheets);
+    const salesSheets = workbook.SheetNames.filter(name => salesSheetRegex.test(name));
+
+    console.log('[PARSER] Found Sales Sheets (Regex Match):', salesSheets);
 
     salesSheets.forEach(sheetName => {
         const salesSheet = workbook.Sheets[sheetName];
@@ -182,6 +183,8 @@ const processQuotesFile = (workbook, dataset) => {
                 else if (cleanKey === 'FECHADEENTREGA' || cleanKey === 'FECHAENTREGA') normalized.deliveryDate = row[key];
                 else if (cleanKey.includes('FECHAFACTURA') || cleanKey.includes('FECHAFC') || cleanKey.includes('F.FACTURA') || cleanKey.includes('F.FC')) normalized.invoiceDate = row[key];
                 else if (cleanKey === 'FECHACOBRO') normalized.paymentDate = row[key];
+                // Fallback Date (User Request: Use Quote Date if OC is missing)
+                else if (cleanKey === 'FECHA' || cleanKey === 'FECHACOTIZACION' || cleanKey.includes('F.COT') || cleanKey === 'DATE') normalized.quoteDate = row[key];
 
                 // Financials
                 // --- MANDATORY: A COBRAR SIN IVA ---
@@ -245,14 +248,33 @@ const processQuotesFile = (workbook, dataset) => {
                     });
                 }
 
-                // Validate Date (User Request Debug)
-                const dateCheck = parseExcelDate(normalized.ocDate);
-                if (!dateCheck && sheetName.includes('2026')) {
+                // Validate Date (User Request Debug) - WITH FALLBACK
+                const ocDateParsed = parseExcelDate(normalized.ocDate);
+                const quoteDateParsed = parseExcelDate(normalized.quoteDate);
+                const effectiveDate = ocDateParsed || quoteDateParsed;
+
+                // DATA INSPECTION FOR USER (Explicit Request)
+                if (sheetName.includes('2026')) {
+                    const effectiveYear = effectiveDate ? new Date(effectiveDate).getFullYear() : null;
+                    const includedIn2026 = effectiveYear === 2026;
+                    const reason = !effectiveDate ? 'No Dates' : (includedIn2026 ? 'Effective Date 2026' : `Effective Date ${effectiveYear}`);
+
+                    console.log(`[DEBUG 2026 ROW] Row: ${normalized.originalRowIndex} | Nº: ${normalized.quoteId} | OC Raw: ${normalized.ocDate} -> ${ocDateParsed} | Quote Raw: ${normalized.quoteDate} -> ${quoteDateParsed} | Effective: ${effectiveDate} | Amount: ${normalized.receivableReal} | Included: ${includedIn2026} (${reason})`);
+                }
+
+                if (!effectiveDate && sheetName.includes('2026')) {
                     dataset.issues.push({
                         type: 'WARNING',
                         sheet: sheetName,
                         row: normalized.originalRowIndex,
-                        message: 'Falta "FECHA DE OC" válida. Esta venta NO aparecerá en 2026.'
+                        message: 'Falta "FECHA DE OC" y "FECHA COTIZACION" válida. Esta venta NO aparecerá en 2026.'
+                    });
+                } else if (!ocDateParsed && quoteDateParsed && sheetName.includes('2026')) {
+                    dataset.issues.push({
+                        type: 'INFO',
+                        sheet: sheetName,
+                        row: normalized.originalRowIndex,
+                        message: `OC inválida → se usó Fecha Cotización (${quoteDateParsed}) y la venta SÍ se incluye en 2026.`
                     });
                 }
 

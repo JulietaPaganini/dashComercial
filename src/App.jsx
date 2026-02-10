@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import Layout from './components/Layout/Layout';
 import { parseExcelFiles } from './services/ExcelParser';
 import { processDataset, calculateKPIs } from './services/DataProcessor';
+import { parseCurrency, parseExcelDate } from './services/Utils'; // FIX: Imported shared utils
 import { CurrencyService } from './services/CurrencyService';
 import { Upload, TrendingUp, AlertTriangle, DollarSign, Clock, LayoutDashboard, Database, FileText, Filter, Wallet, FileBarChart, Activity, Users, UserX, FileWarning, PieChart } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
@@ -341,12 +342,12 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
 
       prevSales = prevQuotes
         .filter(q => q.status === 'GANADA')
-        .reduce((acc, q) => acc + (q.saleAmount || q.amount), 0);
+        .reduce((acc, q) => acc + (q.saleAmount || 0), 0);
 
       // Calculate % Change
       const currentSales = filteredQuotes
         .filter(q => q.status === 'GANADA')
-        .reduce((acc, q) => acc + (q.saleAmount || q.amount), 0);
+        .reduce((acc, q) => acc + (q.saleAmount || 0), 0);
 
       if (prevQuotes.length === 0) {
         salesTrend = "Sin datos históricos";
@@ -424,10 +425,28 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
     // Calculate Global Debt for Display Title
     const globalDebt = (processedData?.clients || []).reduce((acc, c) => acc + c.amount, 0);
 
-    // --- DEBUG 2026 VISIBLE ---
-    const sales2026Raw = (processedData?.sales || []).filter(s => s.sourceSheet && s.sourceSheet.includes('2026'));
-    const total2026Raw = sales2026Raw.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
-    const count2026Raw = sales2026Raw.length;
+    // --- DEBUG VISIBLE ---
+    // Recalculate based on current processed data for display
+    const debugSales = processedData?.allSales || []; // FIX: Use allSales (array) not sales (object)
+    const debugTotalRaw = debugSales.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+    const debugTotalOC2026 = debugSales
+      .filter(s => {
+        // STRICT OPTION B: OC Date || Quote Date
+        const effective = parseExcelDate(s.ocDate || s.quoteDate);
+        return effective && effective.startsWith('2026');
+      })
+      .reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+
+    // Debug Log to help User verify
+    console.log('[DEBUG KPI vs RAW]', {
+      rawTotal: debugTotalOC2026,
+      rawCount: debugSales.filter(s => parseExcelDate(s.ocDate || s.quoteDate)?.startsWith('2026')).length
+    });
+    const debugCountInvalid = debugSales.filter(s => !parseExcelDate(s.ocDate)).length;
+
+
+    // Toggle via URL param ?debug=1
+    const showDebug = new URLSearchParams(window.location.search).get('debug') === '1';
     // --------------------------
 
     return {
@@ -439,7 +458,13 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
       globalDebt,
 
       // Pass Debug Data
-      debug2026: { total: total2026Raw, count: count2026Raw },
+      debugData: {
+        totalRaw: debugTotalRaw,
+        countRaw: debugSales.length,
+        totalOC2026: debugTotalOC2026,
+        countInvalid: debugCountInvalid,
+        visible: showDebug // Control visibility
+      },
 
       // Extract unique options for Table Dropdowns based on CURRENT data (or ALL data? usually ALL is better for dropdowns)
       uniqueStatuses: [...new Set(processedData?.quotes?.map(q => q.status).filter(Boolean))].sort(),
@@ -481,20 +506,29 @@ const SalesDashboard = ({ processedData, initialKpis, onScan }) => {
           <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Dashboard Comercial</h1>
           <p className="text-gray-500 mt-1">Visión general del rendimiento y estado financiero.</p>
 
-          {/* --- DEBUG BOX --- */}
-          {dashboardData.debug2026 && (
-            <div className="mt-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-md max-w-xl">
-              <p className="font-bold flex items-center gap-2"><AlertTriangle size={18} /> DEBUG: Validación de Datos 2026 (Raw)</p>
-              <p className="text-sm mt-1">
-                Total detectado en hoja "VENTAS - CONCRETADAS 2026": <br />
-                <span className="text-xl font-mono font-bold">{fmtMoneyFull(dashboardData.debug2026.total)}</span>
-                <span className="text-xs ml-2">({dashboardData.debug2026.count} filas)</span>
-              </p>
-              <p className="text-xs mt-2 opacity-80">
-                Este número es la suma directa de la columna "A COBRAR SIN IVA" sin ningún filtro de fecha.
-                Si este número es correcto ($59M), el problema está en los filtros de fecha.
-                Si este número es incorrecto ($47M), el problema es que el sistema no está leyendo todas las filas del Excel.
-              </p>
+          {/* --- DEBUG BOX IMPROVED --- */}
+          {dashboardData.debugData?.visible && (
+            <div className="mt-4 bg-orange-50 border-l-4 border-orange-500 text-orange-900 p-4 rounded shadow-md max-w-2xl text-sm">
+              <p className="font-bold flex items-center gap-2 mb-2"><AlertTriangle size={18} /> DEBUG: Auditoría de Ventas (Local)</p>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="font-semibold text-xs uppercase text-orange-700/70">Total Leído (Todas Hojas)</p>
+                  <p className="font-mono text-lg font-bold">{fmtMoneyFull(dashboardData.debugData.totalRaw)}</p>
+                  <p className="text-xs">{dashboardData.debugData.countRaw} filas leídas</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-xs uppercase text-orange-700/70">Total Año 2026 (Por Fecha OC)</p>
+                  <p className="font-mono text-lg font-bold text-green-700">{fmtMoneyFull(dashboardData.debugData.totalOC2026)}</p>
+                  <p className="text-xs">Meta: $59.000.000</p>
+                </div>
+              </div>
+
+              {dashboardData.debugData.countInvalid > 0 && (
+                <div className="mt-3 pt-2 border-t border-orange-200 text-red-600 font-medium">
+                  ⚠ Hay {dashboardData.debugData.countInvalid} filas con Fecha OC inválida (excluidas del filtro 2026).
+                </div>
+              )}
             </div>
           )}
           {/* ----------------- */}
@@ -993,6 +1027,41 @@ const ProcessingReport = ({ issues, onClose }) => {
   const warnings = issues.filter(i => i.type === 'WARNING');
   const others = issues.filter(i => i.type !== 'ERROR' && i.type !== 'WARNING');
 
+  const handleExportJSON = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(issues, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", "reporte_carga_ocme.json");
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleExportCSV = () => {
+    // CSV Header
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "Tipo,Hoja,Fila,Mensaje\n";
+
+    // CSV Rows
+    issues.forEach(issue => {
+      const row = [
+        issue.type,
+        `"${issue.sheet || ''}"`, // Quote sheet names to handle commas/spaces
+        issue.row || '',
+        `"${issue.message.replace(/"/g, '""')}"` // Escape quotes in message
+      ].join(",");
+      csvContent += row + "\r\n";
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "reporte_carga_ocme.csv");
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
       <div className="bg-white w-full max-w-4xl max-h-[85vh] rounded-xl shadow-2xl flex flex-col overflow-hidden">
@@ -1006,12 +1075,26 @@ const ProcessingReport = ({ issues, onClose }) => {
               Se encontraron {issues.length} observaciones durante el procesamiento.
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-200 rounded-full transition-colors"
-          >
-            ✕
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleExportCSV}
+              className="px-3 py-1.5 bg-green-50 text-green-700 hover:bg-green-100 text-xs font-bold rounded border border-green-200 transition-colors flex items-center gap-1"
+            >
+              <FileText size={14} /> CSV
+            </button>
+            <button
+              onClick={handleExportJSON}
+              className="px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 text-xs font-bold rounded border border-gray-300 transition-colors flex items-center gap-1"
+            >
+              <Database size={14} /> JSON
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-gray-200 rounded-full transition-colors ml-2"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         <div className="overflow-auto p-6 flex-1">
@@ -1060,7 +1143,7 @@ const ProcessingReport = ({ issues, onClose }) => {
           </table>
         </div>
 
-        <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+        <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2">
           <button
             onClick={onClose}
             className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-sm transition-colors"
@@ -1091,6 +1174,9 @@ const UploadManager = ({ onDataLoaded, history }) => {
         if (clientsFile) filesToProcess.push(clientsFile);
 
         const rawDataset = await parseExcelFiles(filesToProcess);
+        console.log('[DEBUG APP] Parsed Sales Count:', rawDataset.sales?.length);
+        console.log('[DEBUG APP] Parsed Sales Sample:', rawDataset.sales?.slice(0, 2));
+
         const processed = await processDataset(rawDataset); // AWAIT HERE
         // We calculate local KPIs just for the log or immediate view, but App will recalc proper totals
         const kpis = calculateKPIs(processed);

@@ -7,22 +7,37 @@ export const processDataset = (rawDataset) => {
     const { quotes, sales, clients } = rawDataset;
 
     // --- AUDIT LOGGING FOR USER DEBUG (2026) ---
-    const sales2026 = sales.filter(s => s.sourceSheet && s.sourceSheet.includes('2026'));
-    const total2026Raw = sales2026.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
-    const count2026 = sales2026.length;
-    const count2026NoDate = sales2026.filter(s => !parseExcelDate(s.ocDate)).length;
+    // User Requirement: 
+    // 1. Raw Total = Sum of "A COBRAR SIN IVA" from ALL "CONCRETADAS" sheets (already filtered by ExcelParser)
+    // 2. Raw 2026 OC = Sum of "A COBRAR SIN IVA" where YEAR(ocDate) == 2026
 
-    console.log(`[AUDIT 2026] Raw Sales Calculation:
-    - Sheet: VENTAS - CONCRETADAS 2026
-    - Rows Found: ${count2026}
-    - Rows w/ Missing FECHA OC: ${count2026NoDate}
-    - Total A COBRAR SIN IVA (Raw Sum): $${total2026Raw.toLocaleString()}
+    // A. Total Raw Read (All Years)
+    const allSalesRaw = sales || [];
+    const totalRawRead = allSalesRaw.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+    const countRawRead = allSalesRaw.length;
+
+    // B. Filtered by OC Date 2026 (with Fallback to Quote Date)
+    const salesOC2026 = allSalesRaw.filter(s => {
+        // Fallback Logic: Try OC Date, then Quote Date (parsed by ExcelParser)
+        const d = parseExcelDate(s.ocDate || s.quoteDate);
+        if (!d) return false;
+        return d.startsWith('2026'); // ISO format YYYY-MM-DD
+    });
+    const totalOC2026 = salesOC2026.reduce((acc, s) => acc + parseCurrency(s.receivableReal), 0);
+    const countOC2026 = salesOC2026.length;
+
+    // C. Invalid OC Dates (Potential lost data) - Actually Invalid Effective Date
+    const salesInvalidOC = allSalesRaw.filter(s => !parseExcelDate(s.ocDate || s.quoteDate));
+    const countInvalidOC = salesInvalidOC.length;
+
+    console.log(`[AUDIT] Sales Data Integrity:
+    - Total Rows Read (All Sheets): ${countRawRead}
+    - Total Amount Read (All Sheets): $${totalRawRead.toLocaleString()}
+    - Rows with OC Date in 2026: ${countOC2026}
+    - Amount for OC 2026: $${totalOC2026.toLocaleString()}
+    - Rows with Invalid OC Date: ${countInvalidOC}
     `);
 
-    // Warn about specific rows if they are missing dates
-    if (count2026NoDate > 0) {
-        console.warn('[AUDIT 2026] Rows missing FECHA DE OC:', sales2026.filter(s => !parseExcelDate(s.ocDate)));
-    }
     // -------------------------------------------
 
     const processed = {
@@ -36,7 +51,8 @@ export const processDataset = (rawDataset) => {
         audit: rawDataset.audit || {}, // Pass audit data
         debugRaw: [],
         debugAuditLogs: [],
-        issues: [...rawDataset.issues] // Inherit parser issues
+        issues: [...rawDataset.issues], // Inherit parser issues
+        allSales: sales || [] // EXPOSED FOR DEBUGGING (Correct Location)
     };
 
     // Map Sales by Quote ID for fast lookup
@@ -94,10 +110,8 @@ export const processDataset = (rawDataset) => {
             source: source, // 'MATCH', 'QUOTE_ONLY', 'SALE_ONLY'
 
             // Core Data
-            // USER REQUIREMENT: For Sales, the date MUST be the OC Date (Fecha de OC) from Column D.
-            // If it's a Sale (has sale object) and has ocDate, use it.
-            // Fallback to Quote Date only if no sales date available.
-            date: parseExcelDate((sale && sale.ocDate) ? sale.ocDate : (quote?.date || sale?.ocDate)),
+            // USER REQUIREMENT: For Sales, use OC Date -> Fallback to Sale's Quote Date -> Fallback to Linked Quote Date
+            date: parseExcelDate((sale && (sale.ocDate || sale.quoteDate)) ? (sale.ocDate || sale.quoteDate) : (quote?.date || sale?.ocDate)),
 
             client: quote?.client || 'Sin Cliente', // Could try to extract client from Sale description if desperate
             description: combinedDescription,
@@ -148,6 +162,7 @@ export const processDataset = (rawDataset) => {
     };
 
     // PASS 1: Iterate Quotes
+    let skippedDuplicateAmount = 0; // TRACKING FOR USER VERIFICATION
     rawDataset.quotes.forEach((rawQuote, idx) => {
         try {
             const id = rawQuote.id?.toString().trim();
@@ -163,11 +178,41 @@ export const processDataset = (rawDataset) => {
             }
 
             const sale = salesMap.get(id);
+            let effectiveSale = null;
+
             if (sale) {
-                usedSalesIds.add(sale._originalIdx);
+                // STRICT CONTENT-BASED DEDUPLICATION (Stable Key)
+                const sAmount = parseCurrency(sale.receivableReal || sale.amount);
+                const sDate = parseExcelDate(sale.ocDate || sale.quoteDate) || 'NODATE';
+                const sClient = (sale.client || 'NOCLIENT').toString().trim().toUpperCase().replace(/\s+/g, '');
+                const sId = (sale.quoteId || 'NOID').toString().trim().toUpperCase();
+
+                // Key: ID|CLIENT|AMOUNT|DATE
+                const contentKey = `${sId}|${sClient}|${sAmount}|${sDate}`;
+
+                if (usedSalesIds.has(contentKey)) {
+                    // DUPLICATE DETECTED
+                    skippedDuplicateAmount += sAmount;
+                    console.warn(`[KPI DEDUPE] Duplicate Content Key: ${contentKey}. Skipping $${sAmount}.`);
+
+                    // Add visibility to User Report (Limit to top 20 to avoid spam)
+                    if (processed.issues.filter(i => i.type === 'WARNING' && i.message.includes('Duplicado')).length < 20) {
+                        processed.issues.push({
+                            type: 'WARNING', // Visible in Report
+                            sheet: 'VENTAS',
+                            row: sale._originalIdx, // Approximate
+                            message: `Venta Duplicada (Ignorada): $${sAmount.toLocaleString()} - Ref: ${sId}`
+                        });
+                    }
+
+                } else {
+                    // First time using this content
+                    usedSalesIds.add(contentKey);
+                    effectiveSale = sale;
+                }
             }
 
-            const model = createUnifiedModel(rawQuote, sale, sale ? 'MATCH' : 'QUOTE_ONLY');
+            const model = createUnifiedModel(rawQuote, effectiveSale, effectiveSale ? 'MATCH' : 'QUOTE_ONLY');
 
             // Determine Status Logic (Centralized)
             if (model.status.includes('APROBADO') || model.status.includes('VENDIDO') || model.status.includes('OK') || sale) {
@@ -191,6 +236,8 @@ export const processDataset = (rawDataset) => {
             });
         }
     });
+
+    console.log(`[KPI DEDUPE SUMMARY] Total Amount Skipped due to Duplication: $${skippedDuplicateAmount.toLocaleString()}`);
 
     // PASS 2: Find Orphan Sales (Sales not linked to any Quote)
     rawDataset.sales.forEach((sale, idx) => {
@@ -668,7 +715,7 @@ const calculateRevenueTrend = (quotes) => {
 
         // Only count WON sales for Revenue Trend
         if (q.status === 'GANADA') {
-            monthlyData[key].revenue += (q.saleAmount || q.amount);
+            monthlyData[key].revenue += (q.saleAmount || 0); // Strict Sales only
             monthlyData[key].wonCount += 1;
         }
     });
@@ -681,9 +728,12 @@ export const calculateKPIs = (processedData) => {
     const { quotes, clients } = processedData;
 
     // 1. Sales
+    // 1. Sales
+    // STRICT REQUIREMENT: Total Vendido = Sum of "A COBRAR SIN IVA" (saleAmount).
+    // Do NOT fallback to Quote Amount. Only verified sales count.
     const totalSales = quotes
         .filter(q => q.status === 'GANADA')
-        .reduce((acc, q) => acc + (q.saleAmount || q.amount), 0);
+        .reduce((acc, q) => acc + (q.saleAmount || 0), 0);
 
     // 2. Total Quoted (Pipeline Volume) - ALL QUOTES
     const pipelineValue = quotes.reduce((acc, q) => acc + (q.amount || 0), 0);
@@ -767,6 +817,7 @@ export const calculateKPIs = (processedData) => {
         .slice(0, 5);
 
     return {
+        // allSales removed from here - it belongs in processedData, not KPI calc
         sales: {
             totalSales,
             revenueTrend: calculateRevenueTrend(quotes)
